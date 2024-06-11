@@ -137,7 +137,7 @@ def combine_alpha(dest_alpha: int, new_alpha: int) -> int:
     
     return int(dest_alpha + new_alpha * (1 - dest_alpha / 255))
 
-def blend_pixels(original: tuple | np.ndarray, new: tuple | np.ndarray) -> tuple | np.ndarray:
+def blend_pixels(original, new):
     """
     Function to truly blend pixels, including their alpha values.
     Inputs: 2 4-tuples of RGBA, returns a 4-tuple of RGBA.
@@ -241,7 +241,7 @@ def draw_line(image: np.ndarray, pos1: tuple, pos2: tuple, color: Tuple[int, int
         image[rr_disk, cc_disk] = color
     
 
-def blend_multiple_pixels(dstacked_pixels: np.ndarray) -> tuple | np.ndarray:
+def blend_multiple_pixels(dstacked_pixels: np.ndarray):
     """
     Blends multiple pixels together. 
     Pixels should be in order of how they should be blended.
@@ -268,15 +268,6 @@ def cls():
     """
     os.system('cls')
 
-def draw_text(text:str, x:int, y:int, bold=False, underline=False, color: str | tuple = "#ffffff", bg_color: str | tuple = None):
-    line=stuff.term.move_xy(x, y)
-    if bold:
-        line+=stuff.term.bold
-    if underline:
-        line+=stuff.term.underline
-    
-    line += fcode(color, bg_color) + text + stuff.term.normal
-    print2(line)
 
 def len_no_ansi(string: str) -> str:
     """
@@ -328,7 +319,7 @@ def nearest_quarter(x: float) -> float:
     """
     return round(x * 4) / 4
 
-def first_diff_color(arr1: np.ndarray, arr2: np.ndarray) -> int | None:
+def first_diff_color(arr1: np.ndarray, arr2: np.ndarray):
     """
     Returns the index of the first different color in the two arrays. If exactly the same, returns None.
     Both arrays must be 2d numpy arrays, with the 2d axis being 4 long (r,g,b,a)
@@ -348,7 +339,7 @@ def first_diff_color(arr1: np.ndarray, arr2: np.ndarray) -> int | None:
     
     return first_diff
 
-def last_diff_color(arr1: np.ndarray, arr2: np.ndarray) -> int | None:
+def last_diff_color(arr1: np.ndarray, arr2: np.ndarray):
     """
     Returns the index of the last different color in the two arrays. If exactly the same, returns None.
     Both arrays must be 2d numpy arrays, with the 2d axis being 4 long (r,g,b,a)
@@ -367,7 +358,7 @@ def last_diff_color(arr1: np.ndarray, arr2: np.ndarray) -> int | None:
     
     return last_diff
 
-def lesser(a: int | None, b: int | None) -> int | None:
+def lesser(a, b):
     """
     Takes two numbers that are either None or an int.
     
@@ -381,7 +372,7 @@ def lesser(a: int | None, b: int | None) -> int | None:
         return a
     return min(a, b)
 
-def greater(a: int | None, b: int | None) -> int | None:
+def greater(a, b):
     """
     Takes two numbers that are either None or an int.
     

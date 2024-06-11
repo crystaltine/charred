@@ -1,5 +1,5 @@
 import curses
-from typing import TYPE_CHECKING, Literal, Tuple, List
+from typing import TYPE_CHECKING, Tuple, List
 from utils import (
     fcode_opt as fco, blend_rgba_img_onto_rgb_img_inplace, 
     first_diff_color, last_diff_color, lesser, greater, draw_line,
@@ -19,7 +19,7 @@ class CameraFrame:
     printed to the screen will assume all alpha values are 255 (opaque).
     """
 
-    def __init__(self, size: Tuple[int | None, int | None] = (None, None), pos: Tuple[int | None, int | None] = (0, 0)) -> None:
+    def __init__(self, size = (None, None), pos = (0, 0)) -> None:
         """ Optional params:
         - `size`: tuple (width, height) in pixels. None values will default to the terminal's width/height.
         - `pos`: tuple (x, y) in pixels, where the top left corner of the frame will be placed. Defaults to (0, 0) (top left of screen)
@@ -62,6 +62,8 @@ class CameraFrame:
                 # combine into 8-bit number
                 color_key = (scaled_fg << 4) + scaled_bg
                 
+                color_key = max(1, color_key)
+                
                 if color_key not in self.initialized_colors:
                     # initialize the color pair
                     fg_1000_based = int(scaled_fg / 15 * 1000)
@@ -69,7 +71,7 @@ class CameraFrame:
                     #Logger.log(f"scaled fg: {scaled_fg}, scaled bg: {scaled_bg}, fg_1000_based: {fg_1000_based}, bg_1000_based: {bg_1000_based}")
                     curses.init_color(scaled_fg << 4, fg_1000_based, fg_1000_based, fg_1000_based)
                     curses.init_color(scaled_bg, bg_1000_based, bg_1000_based, bg_1000_based)
-                    #Logger.log(f"color key: {color_key}, fg: {scaled_fg << 4}, bg: {scaled_bg}")
+                    Logger.log(f"color key: {color_key}, fg: {scaled_fg << 4}, bg: {scaled_bg}")
                     curses.init_pair(color_key, scaled_fg << 4, scaled_bg)
                     self.initialized_colors.add(color_key)                        
                 
@@ -113,22 +115,24 @@ class CameraFrame:
             
         else:
             
-            #compiled_str = "" # try printing the whole thing at once
+            compiled_str = "" # try printing the whole thing at once
             
             for i in range(0, self.height, 2):
                 string = ""
                 for j in range(self.width):
                     string += fco(self.pixels[i,j], self.pixels[i+1,j]) + '▀' # for quick copy: ▀
                 
-                #compiled_str += string + "\n"
-                print2(stuff.term.move_xy(self.pos[0], (i+self.pos[1])//2) + string)
-            #print2(stuff.term.move_xy(self.pos[0], self.pos[1]//2) + compiled_str)
+                compiled_str += string
+                #print2(stuff.term.move_xy(self.pos[0], (i+self.pos[1])//2) + string)
+            print2(stuff.term.move_xy(self.pos[0], self.pos[1]//2) + compiled_str)
         
-        stuff.screen.refresh()
+        #stuff.screen.refresh()
 
     def render(self, prev_frame: "CameraFrame") -> None:
         """ Prints the frame to the screen using curses.addstr().
         Optimized by only drawing the changes from the previous frame. """
+        
+        self.initialized_colors = set()
         
         #indices_to_print = []
         #""" Should end up being a list of tuples (start, end) 
@@ -149,7 +153,7 @@ class CameraFrame:
             
             combined_intervals: List[Tuple[int, int]] = combine_intervals(*row1_diff_intervals, *row2_diff_intervals)
             
-            Logger.log(f"combined intervals: {combined_intervals}")
+            #Logger.log(f"combined intervals: {combined_intervals}")
             
             # render
             screen_y = top_row_index // 2
@@ -181,7 +185,7 @@ class CameraFrame:
                         self.initialized_colors.add(color_key)   
                     #string = "▀"                 
                     
-                    Logger.log(f"(render) at yx {screen_y}, {j} string of len 1")
+                    #Logger.log(f"(render) at yx {screen_y}, {j} string of len 1")
                     stuff.screen.addch(screen_y, j, "▀", curses.color_pair(color_key))
             
             #Logger.log(f"[CameraFrame/render]: Appending ({print_start}, {print_end}) to indices_to_print, which currently has {len(indices_to_print)} elements (b4 adding)")
@@ -262,7 +266,7 @@ class CameraFrame:
             #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]},{i + self.pos[1]//2}: \x1b[0m[{string}\x1b[0m]")
             print2(stuff.term.move_xy(int(start)+self.pos[0], i+self.pos[1]//2) + string)
             
-        stuff.screen.refresh()
+        #stuff.screen.refresh()
 
     def fill(self, color: Tuple[int, int, int]) -> None:
         """ Fills the entire canvas with the given color. RGB (3-tuple) required. Should be pretty efficient because of numpy. """
@@ -273,7 +277,7 @@ class CameraFrame:
         self, 
         color1: Tuple[int, int, int], 
         color2: Tuple[int, int, int], 
-        direction: Literal["horizontal", "vertical"] = "horizontal"
+        direction = "horizontal"
         ) -> None:
         """ Fills the entire canvas with a gradient from color1 to color2.
         The gradient can be either horizontal or vertical. """
@@ -292,25 +296,14 @@ class CameraFrame:
             for i in range(self.width):
                 self.pixels[:,i] = gradient
 
-    Anchor = Literal[
-        "top-left", 
-        "top-right", 
-        "bottom-left", 
-        "bottom-right", 
-        "center",
-        "top",
-        "bottom",
-        "left",
-        "right"
-    ]
     def add_rect(
         self, 
-        color: Tuple[int, int, int] | Tuple[int, int, int, int], 
+        color, 
         x: int, y: int, 
         width: int, height: int,
         outline_width: int = 0,
-        outline_color: Tuple[int, int, int] | Tuple[int, int, int, int] = (0,0,0,0),
-        anchor: Anchor = "top-left",
+        outline_color = (0,0,0,0),
+        anchor = "top-left",
         ) -> None:
         """ Places a rectangle on the frame with the given RGBA color and position.
         Optionally, can add an outline to the rectangle with the given width and color. 
@@ -341,39 +334,38 @@ class CameraFrame:
         x1 = x - outline_width
         x2 = x + width + outline_width
         
-        match(anchor):
-            case "top-right":
-                x1 -= width
-                x2 -= width
-            case "bottom-left":
-                y1 -= height
-                y2 -= height
-            case "bottom-right":
-                x1 -= width
-                x2 -= width
-                y1 -= height
-                y2 -= height
-            case "center":
-                x1 -= width // 2
-                x2 -= width // 2
-                y1 -= height // 2
-                y2 -= height // 2
-            case "top":
-                x1 -= width // 2
-                x2 -= width // 2
-            case "bottom":
-                x1 -= width // 2
-                x2 -= width // 2
-                y1 -= height
-                y2 -= height
-            case "left":
-                y1 -= height // 2
-                y2 -= height // 2
-            case "right":
-                y1 -= height // 2
-                y2 -= height // 2
-                x1 -= width
-                x2 -= width
+        if anchor == "top-right":
+            x1 -= width
+            x2 -= width
+        elif anchor == "bottom-left":
+            y1 -= height
+            y2 -= height
+        elif anchor == "bottom-right":
+            x1 -= width
+            x2 -= width
+            y1 -= height
+            y2 -= height
+        elif anchor == "center":
+            x1 -= width // 2
+            x2 -= width // 2
+            y1 -= height // 2
+            y2 -= height // 2
+        elif anchor == "top":
+            x1 -= width // 2
+            x2 -= width // 2
+        elif anchor == "bottom":
+            x1 -= width // 2
+            x2 -= width // 2
+            y1 -= height
+            y2 -= height
+        elif anchor == "left":
+            y1 -= height // 2
+            y2 -= height // 2
+        elif anchor == "right":
+            y1 -= height // 2
+            y2 -= height // 2
+            x1 -= width
+            x2 -= width
         
         # if any coords go out of bounds, set it to the edge of the frame and clip the rect_as_pixels
         clipped_y1 = max(0, y1)

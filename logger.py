@@ -33,7 +33,8 @@ class Logger:
         if len(Logger.buffer) > 0:
             
             # create log dir if nonexistent, prevents error
-            if not os.path.exists((fp:=os.path.dirname(os.path.realpath(__file__)))+"/logs"):
+            fp = os.path.dirname(os.path.realpath(__file__))
+            if not os.path.exists(fp+"/logs"):
                 os.makedirs(fp+"/logs")
 
             with open(f"logs/{int(time())}.log", "w", encoding='utf-8') as log_f:

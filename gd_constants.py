@@ -8,9 +8,9 @@ class stuff:
     
     term = Terminal()
     
-    screen = curses.initscr()
-    curses.start_color()
-
+    #screen = curses.initscr()
+    #curses.start_color()
+    
     def get_screen_height() -> int:
         return stuff.screen.getmaxyx()[0]
 
