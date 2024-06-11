@@ -1,17 +1,16 @@
 from typing import Union, Tuple, TYPE_CHECKING, List
 from logger import Logger
 import re
+import sys
 import os
 import numpy as np
 from skimage.draw import line, disk
 from gd_constants import stuff
 
-def print2(*args, **kwargs) -> None:
-    """
-    Wrapper for builtin print that always has end="\\r\\x1b[0m"
-    """
-    print(*args, **kwargs, end='\r\x1b[0m')
-
+def print3(text: str) -> None:
+    """ Slightly faster (?) print3, which uses sys.stdout.write instead of print. Still adds the reset code at the end. """
+    sys.stdout.write(text + '\r\x1b[0m')
+    
 def fcode(fg: Union[str, tuple] = None, bg: Union[str, tuple] = None) -> str:
     '''
     Returns an ANSI format string matching the given styles. This may not be supported in all terminals.
@@ -438,3 +437,46 @@ def add_row_of(arr: np.ndarray, num: int) -> np.ndarray:
     by adding another row filled with `num` underneath the original list. """
     result = np.vstack((arr, np.full_like(arr, num)))
     return result.transpose()
+
+def distances_to_false(bool_array: np.ndarray) -> np.ndarray:
+    """
+    Given a 1D array of booleans, returns a 1D array of integers representing the distances between
+    consecutive False values. If there are no False values, returns an empty array.
+    """
+    # Find the indices where the array is False
+    false_indices = np.where(bool_array)[0]
+    
+    # Calculate the distances between consecutive False indices
+    if len(false_indices) == 0:
+        return np.array([])  # Return an empty list if there are no False values
+
+    # Distances between consecutive Falses
+    distances = np.diff(false_indices) - 1
+
+    # Include distance from the start to the first False if it starts with True
+    if false_indices[0] != 0:
+        distances = np.insert(distances, 0, false_indices[0])
+
+    return distances
+
+def get_false_chunk_sizes(bool_array: np.ndarray) -> np.ndarray:
+    """ Given a 1D boolean np array, returns a 1D np array of ints that contains the lengths
+    of the consecutive false intervals. Does not include any 0-length intervals (skips through true chunks). """
+
+    if len(bool_array) == 0:
+        return np.array([])
+
+    diffs = np.diff(bool_array)
+    changes = np.where(diffs == True)[0] + 1
+
+    # edge cases - count chunks at start or end of input
+    if bool_array[0] == False:
+        changes = np.insert(changes, 0, 0)
+    if bool_array[-1] == False:
+        changes = np.append(changes, len(bool_array))
+
+
+    # every even index is the start of a false chunk
+    # every odd index is the end of a false chunk (exclusive)
+    # return odd - even elements (those are the sizes)
+    return changes[1::2] - changes[::2]

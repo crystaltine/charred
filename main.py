@@ -18,21 +18,18 @@ def main():
     
     frame = CameraFrame()
     frame.add_pixels_topleft(0, 0, bad_apple[0])
-    frame.render_raw_old()    
+    frame.render_raw()    
     #curses.napms(500)
     for i in range(1, len(bad_apple)):
-        
-        if i == 3: # print some stuff
-            Logger.log("i = 3 rn")
-            Logger.log(f"frame: {bad_apple[i]}")
         
         new_frame = CameraFrame()
         new_frame.add_pixels_topleft(0, 0, bad_apple[i])
         
         time_start = time_ns()
-        new_frame.render_raw_old()
+        new_frame.render(frame)
         Logger.log(f"frame {i} took {(time_ns()-time_start)/1e9:4f}s to render.")
-        sleep(round(1/FPS))
+        frame = new_frame
+        sleep(1/FPS)
     
 
 if __name__ == "__main__":

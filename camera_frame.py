@@ -1,15 +1,18 @@
 import curses
-from typing import TYPE_CHECKING, Tuple, List
+from typing import TYPE_CHECKING, Literal, Tuple, List
 from utils import (
     fcode_opt as fco, blend_rgba_img_onto_rgb_img_inplace, 
-    first_diff_color, last_diff_color, lesser, greater, draw_line,
-    get_diff_intervals, combine_intervals, print2
+    first_diff_color, last_diff_color, lesser, greater, draw_line, print3,
+    get_diff_intervals, combine_intervals, distances_to_false, get_false_chunk_sizes
 )
 from time import perf_counter
 from threading import Thread
 from logger import Logger
 import numpy as np
 from gd_constants import stuff
+
+RGBTuple = Tuple[int, int, int]
+RGBATuple = Tuple[int, int, int, int]
 
 class CameraFrame:
     """
@@ -19,7 +22,7 @@ class CameraFrame:
     printed to the screen will assume all alpha values are 255 (opaque).
     """
 
-    def __init__(self, size = (None, None), pos = (0, 0)) -> None:
+    def __init__(self, size: Tuple[int | None, int | None] = (None, None), pos: Tuple[int | None, int | None] = (0, 0)) -> None:
         """ Optional params:
         - `size`: tuple (width, height) in pixels. None values will default to the terminal's width/height.
         - `pos`: tuple (x, y) in pixels, where the top left corner of the frame will be placed. Defaults to (0, 0) (top left of screen)
@@ -44,9 +47,51 @@ class CameraFrame:
         """ 2d array of pixels. Each pixel is an rgb tuple. (0, 0) is the top left of the frame, not the top left of the screen. """
 
     def render_raw(self) -> None:
+        """ Simply prints the frame to the screen, without the need for a previous frame. 
+        Keep in mind, this is quite slow and should only be used for rendering the first frame. """
+        
+        # handle odd starting y. NOTE - this wont happen for now, since we are requiring even starting y and height.
+        if self.pos[1] % 2 == 1:
+            # first line prints bottom half char (top half will be terminal default bg)
+            string1 = ""
+            for j in range(self.width):
+                string1 += fco(self.pixels[self.pos[1],j], None) + '▀'
+            print3(stuff.term.move_xy(self.pos[0], self.pos[1]//2) + string1)
+            
+            # print middle rows
+            stop_at = (self.pos[1] + self.height - (self.pos[1] + self.height) % 2) - 1
+            # if height is even there will be an extra line at the end
+            # if odd, then we just go until the end right here, since there is no last isolated line
+            for i in range(self.pos[1]+1, stop_at):
+                string = ""
+                for j in range(self.width):
+                    string += fco(self.pixels[i,j], self.pixels[i+1,j]) + '▀'
+                print3(stuff.term.move_xy(self.pos[0], i//2) + string)
+                
+            # print last line if needed
+            if self.height % 2 == 0: # since y is odd, if height is even, then we have another case of a single line
+                string2 = ""
+                for j in range(self.width):
+                    string2 += fco(None, self.pixels[self.pos[1]+self.height-1,j]) + '▀'
+                print3(stuff.term.move_xy(self.pos[0], (self.pos[1]+self.height)//2 + 1) + string2)
+            
+        else:
+            
+            #compiled_str = "" # try printing the whole thing at once
+            
+            for i in range(0, self.height, 2):
+                string = ""
+                for j in range(self.width):
+                    string += fco(self.pixels[i,j], self.pixels[i+1,j]) + '▀' # for quick copy: ▀
+                
+                #compiled_str += string + "\n"
+                print3(stuff.term.move_xy(self.pos[0], (i+self.pos[1])//2) + string)
+            #print3(stuff.term.move_xy(self.pos[0], self.pos[1]//2) + compiled_str)
+
+    def curses_render_raw(self) -> None:
         for top_row_index in range(0, self.height, 2):       
             screen_y = top_row_index // 2
-            for j in range(len(self.pixels[top_row_index])-1):
+            for j in range(len(self.pixels[top_row_index])):
                 #string += fco(self.pixels[top_row_index,j], self.pixels[top_row_index+1,j]) + '▀' # pixels1 is top, so it gets fg color. pixels2 is bottom, so it gets bg color.
                 # TODO - cant use color codes - need to use curses.initcolor
                 # ^^ maybe make a color cache???? using rgb tuples -> curses color id
@@ -71,12 +116,12 @@ class CameraFrame:
                     #Logger.log(f"scaled fg: {scaled_fg}, scaled bg: {scaled_bg}, fg_1000_based: {fg_1000_based}, bg_1000_based: {bg_1000_based}")
                     curses.init_color(scaled_fg << 4, fg_1000_based, fg_1000_based, fg_1000_based)
                     curses.init_color(scaled_bg, bg_1000_based, bg_1000_based, bg_1000_based)
-                    Logger.log(f"color key: {color_key}, fg: {scaled_fg << 4}, bg: {scaled_bg}")
+                    Logger.log(f"rend raw: color key: {color_key}, fg: {scaled_fg << 4}, bg: {scaled_bg}")
                     curses.init_pair(color_key, scaled_fg << 4, scaled_bg)
                     self.initialized_colors.add(color_key)                        
                 
                 #Logger.log(f"printing at yx {screen_y}, {j} with color key {color_key}")
-                stuff.screen.addstr(screen_y, j, "▀", curses.color_pair(color_key))
+                stuff.screen.addch(screen_y, j, "▀", curses.color_pair(color_key))
         
         #Logger.log(f"[CameraFrame/render]: Appending ({print_start}, {print_end}) to indices_to_print, which currently has {len(indices_to_print)} elements (b4 adding)")
         #indices_to_print.append((print_start, print_end))
@@ -84,53 +129,507 @@ class CameraFrame:
         #Logger.log(f"(raw) refreshing curses screen")
         stuff.screen.refresh()
 
-    def render_raw_old(self) -> None:
-        """ Simply prints the frame to the screen, without the need for a previous frame. 
-        Keep in mind, this is quite slow and should only be used for rendering the first frame. """
-        
-        # handle odd starting y. NOTE - this wont happen for now, since we are requiring even starting y and height.
-        if self.pos[1] % 2 == 1:
-            # first line prints bottom half char (top half will be terminal default bg)
-            string1 = ""
-            for j in range(self.width):
-                string1 += fco(self.pixels[self.pos[1],j], None) + '▀'
-            print2(stuff.term.move_xy(self.pos[0], self.pos[1]//2) + string1)
-            
-            # print middle rows
-            stop_at = (self.pos[1] + self.height - (self.pos[1] + self.height) % 2) - 1
-            # if height is even there will be an extra line at the end
-            # if odd, then we just go until the end right here, since there is no last isolated line
-            for i in range(self.pos[1]+1, stop_at):
-                string = ""
-                for j in range(self.width):
-                    string += fco(self.pixels[i,j], self.pixels[i+1,j]) + '▀'
-                print2(stuff.term.move_xy(self.pos[0], i//2) + string)
-                
-            # print last line if needed
-            if self.height % 2 == 0: # since y is odd, if height is even, then we have another case of a single line
-                string2 = ""
-                for j in range(self.width):
-                    string2 += fco(None, self.pixels[self.pos[1]+self.height-1,j]) + '▀'
-                print2(stuff.term.move_xy(self.pos[0], (self.pos[1]+self.height)//2 + 1) + string2)
-            
-        else:
-            
-            compiled_str = "" # try printing the whole thing at once
-            
-            for i in range(0, self.height, 2):
-                string = ""
-                for j in range(self.width):
-                    string += fco(self.pixels[i,j], self.pixels[i+1,j]) + '▀' # for quick copy: ▀
-                
-                compiled_str += string
-                #print2(stuff.term.move_xy(self.pos[0], (i+self.pos[1])//2) + string)
-            print2(stuff.term.move_xy(self.pos[0], self.pos[1]//2) + compiled_str)
-        
-        #stuff.screen.refresh()
-
+    # XXX - main render func, This can still be improved by adding a huge chunk of pixels at once
+    # if there is a lot of pixels with the same color, then skipping to the next different color
     def render(self, prev_frame: "CameraFrame") -> None:
-        """ Prints the frame to the screen using curses.addstr().
-        Optimized by only drawing the changes from the previous frame. """
+        """ Prints the frame to the screen.
+        Optimized by only printing the changes from the previous frame. """
+        
+        final_string = ""
+
+        i = 0
+        for top_row_index in range(0, self.height, 2):       
+            first_diff_row1 = first_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            first_diff_row2 = first_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            last_diff_row1 = last_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            last_diff_row2 = last_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            print_start = lesser(first_diff_row1, first_diff_row2)
+            print_end = greater(last_diff_row1, last_diff_row2)
+            
+            start, end = print_start, print_end
+            
+            # if both are None, that means the rows were the exact same, so we don't need to print anything
+            if start is None and end is None:
+                #Logger.log(f"Skipping row {i} since it's the same as the previous row!")
+                i += 1
+                continue
+
+            final_string += stuff.term.move_xy(int(start)+self.pos[0], i+self.pos[1]//2)
+            string = ""
+            # get a numpy array of which indices are repeat colors (so we can skip fcode)
+            color_strip = self.pixels[i*2:i*2+2, start:end+1]
+            colors_diffs = np.any(color_strip[:, 1:] != color_strip[:, :-1], axis=(0, 2))
+            """ [diff(1, 0), diff(2, 1), ...]. True if different, False if same. """
+            #Logger.log(f"color strip 1 first 5: {color_strip[0, :5]}")
+            #Logger.log(f"color strip 2 first 5: {color_strip[1, :5]}")
+            #
+            #Logger.log(f"colors_diffs: {colors_diffs[:5]}")
+            
+            # add the first pixel
+            string += fco(self.pixels[i*2,start], self.pixels[i*2+1,start]) + '▀'
+
+            for j in range(start+1, end+1):
+                # if colors_diffs is True for the current pixel, that means the colors are different from the previous pixel
+                # in that case we have to re-fcode
+                if colors_diffs[j-start-1]:
+                    string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀'
+                else:
+                    string += '▀'
+            # while loop ize ^^^
+
+            #Logger.log(f"[CameraFrame/render]: str construction: {perf_counter()-start_time_2:4f}")
+            # go to coordinates in terminal, and print the string
+            # terminal coordinates: start, i
+            
+            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]}, {i + self.pos[1]//2} for len {end-start+1}")
+            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]},{i + self.pos[1]//2}: \x1b[0m[{string}\x1b[0m]")
+            #start_time_2 = perf_counter()
+           # print3(stuff.term.move_xy(int(start)+self.pos[0], i+self.pos[1]//2) + string)
+            #print_buffer.append(((int(start)+self.pos[0], i+self.pos[1]//2), string))
+            final_string += string
+            i += 1
+            #Logger.log(f"[CameraFrame/render]: strlen={len(string)}: {perf_counter()-start_time_2:4f}")
+        
+        # combine all the print calls into a single call
+        #for coords, string in print_buffer:
+        #    final_string += stuff.term.move_xy(*coords) + string
+            
+        print3(final_string)
+        
+        #Logger.log(f"[CameraFrame/render]: print to terminal: {perf_counter()-start_time:4f}")
+    
+    # similar to func above, but should be rendering even less (only intervals of diffs, not first change -> last change)
+    # so idk why tf this one is so much slower
+    def render_intervaled(self, prev_frame: "CameraFrame") -> None:
+        """ Prints the frame to the screen.
+        Optimized by only printing the changes from the previous frame. """
+        
+        final_string = ""
+
+        i = 0
+        for top_row_index in range(0, self.height, 2):       
+            row1_diff_intervals = get_diff_intervals(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            row2_diff_intervals = get_diff_intervals(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            combined_intervals: List[Tuple[int, int]] = combine_intervals(*row1_diff_intervals, *row2_diff_intervals)
+            """ List of (starts -> ends) on which this strip of pixels is different from the previous frame. 
+            Only render pixels along these intervals. """
+            
+            if len(combined_intervals) == 0: # if there are no differences, skip this row
+                i += 1
+                continue
+            
+            color_strip = self.pixels[i*2:i*2+2,:]
+            colors_diffs = np.any(color_strip[:, 1:] != color_strip[:, :-1], axis=(0, 2))
+            """ [diff(1, 0), diff(2, 1), ...]. True if different, False if same. """
+
+            for interval in combined_intervals:
+                
+                start, end = interval
+                # end is exclusive
+                
+                # goto the start of the interval
+                final_string += stuff.term.move_xy(start+self.pos[0], i+self.pos[1]//2)
+                
+                # add the first pixel
+                string = fco(self.pixels[i*2,start], self.pixels[i*2+1,start]) + '▀'
+
+                for j in range(start+1, end):
+                    # if colors_diffs is True for the current pixel, that means the colors are different from the previous pixel
+                    # in that case we have to re-fcode
+                    if colors_diffs[j-1]:
+                        string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀'
+                    else:
+                        string += '▀'
+               
+                final_string += string
+                
+            i += 1
+            #Logger.log(f"[CameraFrame/render]: strlen={len(string)}: {perf_counter()-start_time_2:4f}")
+        
+        # combine all the print calls into a single call
+        #for coords, string in print_buffer:
+        #    final_string += stuff.term.move_xy(*coords) + string
+            
+        print3(final_string)
+        
+        #Logger.log(f"[CameraFrame/render]: print to terminal: {perf_counter()-start_time:4f}")
+    
+    def render_bufferlist(self, prev_frame: "CameraFrame") -> None:
+        """ Prints the frame to the screen.
+        Optimized by only printing the changes from the previous frame. """
+        
+        indices_to_print = []
+        """ Should end up being a list of tuples (start, end) 
+        where start and end are the first and last changed "pixels columns" (characters) in a row. """
+
+        for top_row_index in range(0, self.height, 2):       
+            first_diff_row1 = first_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            first_diff_row2 = first_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            last_diff_row1 = last_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            last_diff_row2 = last_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            print_start = lesser(first_diff_row1, first_diff_row2)
+            print_end = greater(last_diff_row1, last_diff_row2)
+            
+            #Logger.log(f"[CameraFrame/render]: Appending ({print_start}, {print_end}) to indices_to_print, which currently has {len(indices_to_print)} elements (b4 adding)")
+            indices_to_print.append((print_start, print_end))
+        
+        #Logger.log(f"[CameraFrame/render]: get indices to print: {1000*(perf_counter()-start_time):4f}ms")
+        # printing the frame
+        # for each pair of rows, convert the pixels from start to end into colored characters, then print.
+        
+        print_buffer: List[Tuple[Tuple[int, int], str]] = []
+        """
+        Buffer that stores locations as 2-tuples (representing where to term.goto) and the string to print there.
+        
+        This allows us to only use the print function a single time, which is much faster than calling it for each pixel.
+        """
+        
+        for i in range(len(indices_to_print)):
+            #Logger.log(f"[CameraFrame/render]: row {i} indices to print: {indices_to_print[i]}")
+            start, end = indices_to_print[i]
+            
+            # if both are None, that means the rows were the exact same, so we don't need to print anything
+            if start is None and end is None:
+                #Logger.log(f"Skipping row {i} since it's the same as the previous row!")
+                continue
+            
+            # converting the two pixel rows into a string
+            string = ""
+            
+            # get a numpy array of which indices are repeat colors (so we can skip fcode)
+            color_strip = self.pixels[i*2:i*2+2, start:end+1]
+            colors_diffs = np.any(color_strip[:, 1:] != color_strip[:, :-1], axis=(0, 2))
+            
+            # add the first pixel
+            string += fco(self.pixels[i*2,start], self.pixels[i*2+1,start]) + '▀'
+
+            for j in range(start+1, end+1):
+                # if colors_diffs is True for the current pixel, that means the colors are different from the previous pixel
+                # in that case we have to re-fcode
+                if colors_diffs[j-start-1]:
+                    string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀'
+                else:
+                    string += '▀'
+                
+            # add the last few pixels if needed, but theyre all the same
+            #if pixel_idx < end-start+1:
+            #    string += '▀' * (end-start+1 - pixel_idx)
+            #for j in range(start+1, end+1):
+                # if colors are the same as previous pixel, only add the pixel
+                #if colors_diffs[j-start-1]:
+                #    string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀' # pixels1 is top, so it gets fg color. pixels2 is bottom, so it gets bg color.
+                #else:
+                #    string += '▀'
+                    
+            #Logger.log(f"[CameraFrame/render]: str construction: {perf_counter()-start_time_2:4f}")
+            # go to coordinates in terminal, and print the string
+            # terminal coordinates: start, i
+            
+            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]}, {i + self.pos[1]//2} for len {end-start+1}")
+            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]},{i + self.pos[1]//2}: \x1b[0m[{string}\x1b[0m]")
+            #start_time_2 = perf_counter()
+           # print3(stuff.term.move_xy(int(start)+self.pos[0], i+self.pos[1]//2) + string)
+            print_buffer.append(((int(start)+self.pos[0], i+self.pos[1]//2), string))
+            #Logger.log(f"[CameraFrame/render]: strlen={len(string)}: {perf_counter()-start_time_2:4f}")
+        
+        # combine all the print calls into a single call
+        final_string = ""
+        for coords, string in print_buffer:
+            final_string += stuff.term.move_xy(*coords) + string
+            
+        print3(final_string)
+        
+        #Logger.log(f"[CameraFrame/render]: print to terminal: {perf_counter()-start_time:4f}")
+    
+    def render_usingwhile(self, prev_frame: "CameraFrame") -> None:
+        """ Prints the frame to the screen.
+        Optimized by only printing the changes from the previous frame. """
+        
+        final_string = ""
+
+        i = 0
+        for top_row_index in range(0, self.height, 2):       
+            first_diff_row1 = first_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            first_diff_row2 = first_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            last_diff_row1 = last_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            last_diff_row2 = last_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            print_start = lesser(first_diff_row1, first_diff_row2)
+            print_end = greater(last_diff_row1, last_diff_row2)
+            
+            start, end = print_start, print_end
+            
+            # if both are None, that means the rows were the exact same, so we don't need to print anything
+            if start is None and end is None:
+                #Logger.log(f"Skipping row {i} since it's the same as the previous row!")
+                i += 1
+                continue
+
+            final_string += stuff.term.move_xy(int(start)+self.pos[0], i+self.pos[1]//2)
+            string = ""
+            # get a numpy array of which indices are repeat colors (so we can skip fcode)
+            color_strip = self.pixels[i*2:i*2+2, start:end+1]
+            colors_diffs = np.any(color_strip[:, 1:] != color_strip[:, :-1], axis=(0, 2))
+            """ [diff(1, 0), diff(2, 1), ...]. True if different, False if same. """
+            
+            chunks_of_repeated_colors = get_false_chunk_sizes(colors_diffs)
+            
+            #Logger.log(f"color strip 1 first 5: {color_strip[0, :5]}")
+            #Logger.log(f"color strip 2 first 5: {color_strip[1, :5]}")
+            #
+            #Logger.log(f"colors_diffs: {colors_diffs[:5]}")
+            
+            # add the first pixel
+            string += fco(self.pixels[i*2,start], self.pixels[i*2+1,start]) + '▀'
+
+            #for j in range(start+1, end+1):
+            #    # if colors_diffs is True for the current pixel, that means the colors are different from the previous pixel
+            #    # in that case we have to re-fcode
+            #    if colors_diffs[j-start-1]:
+            #        string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀'
+            #    else:
+            #        string += '▀'
+            # while loop ize ^^^
+            j = start + 1
+            num_chunks_covered = 0
+            while j <= end:
+                # if pixel@j diff from previous, calculate fcode
+                if colors_diffs[j-start-1]:
+                    string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀'
+                    j += 1
+                else: # take the next chunk of Falses (same colors), add that number of pixels, and skip to the next True
+                    string += '▀' * chunks_of_repeated_colors[num_chunks_covered]
+                    j += chunks_of_repeated_colors[num_chunks_covered] + 1
+                    num_chunks_covered += 1
+                    
+            #Logger.log(f"[CameraFrame/render]: str construction: {perf_counter()-start_time_2:4f}")
+            # go to coordinates in terminal, and print the string
+            # terminal coordinates: start, i
+            
+            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]}, {i + self.pos[1]//2} for len {end-start+1}")
+            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]},{i + self.pos[1]//2}: \x1b[0m[{string}\x1b[0m]")
+            #start_time_2 = perf_counter()
+           # print3(stuff.term.move_xy(int(start)+self.pos[0], i+self.pos[1]//2) + string)
+            #print_buffer.append(((int(start)+self.pos[0], i+self.pos[1]//2), string))
+            final_string += string
+            i += 1
+            #Logger.log(f"[CameraFrame/render]: strlen={len(string)}: {perf_counter()-start_time_2:4f}")
+        
+        # combine all the print calls into a single call
+        #for coords, string in print_buffer:
+        #    final_string += stuff.term.move_xy(*coords) + string
+            
+        print3(final_string)
+    
+    # experimental, isnt working (but kinda close to, but i have no time to fix)
+    def render2_usingdists(self, prev_frame: "CameraFrame") -> None:
+        """ Prints the frame to the screen.
+        Optimized by only printing the changes from the previous frame. """
+        
+        indices_to_print = []
+        """ Should end up being a list of tuples (start, end) 
+        where start and end are the first and last changed "pixels columns" (characters) in a row. """
+        
+        # compare the curr frame with the previous frame
+        # for each pair of rows, find the first and last changed column
+        # multiply term height by 2 since chars are 2 pixels tall
+        start_time = perf_counter()
+        times = {}
+        
+        #Logger.log(f"CF render begin -------------------------------")
+        
+        for top_row_index in range(0, self.height, 2):       
+            first_diff_row1 = first_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            first_diff_row2 = first_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            last_diff_row1 = last_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            last_diff_row2 = last_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            print_start = lesser(first_diff_row1, first_diff_row2)
+            print_end = greater(last_diff_row1, last_diff_row2)
+            
+            #Logger.log(f"[CameraFrame/render]: Appending ({print_start}, {print_end}) to indices_to_print, which currently has {len(indices_to_print)} elements (b4 adding)")
+            indices_to_print.append((print_start, print_end))
+        
+        #Logger.log(f"[CameraFrame/render]: get indices to print: {1000*(perf_counter()-start_time):4f}ms")
+        # printing the frame
+        # for each pair of rows, convert the pixels from start to end into colored characters, then print.
+        
+        print_buffer: List[Tuple[Tuple[int, int], str]] = []
+        """
+        Buffer that stores locations as 2-tuples (representing where to term.goto) and the string to print there.
+        
+        This allows us to only use the print function a single time, which is much faster than calling it for each pixel.
+        """
+        
+        for i in range(len(indices_to_print)):
+            #Logger.log(f"[CameraFrame/render]: row {i} indices to print: {indices_to_print[i]}")
+            start, end = indices_to_print[i]
+            
+            # if both are None, that means the rows were the exact same, so we don't need to print anything
+            if start is None and end is None:
+                #Logger.log(f"Skipping row {i} since it's the same as the previous row!")
+                continue
+            
+            # converting the two pixel rows into a string
+            string = ""
+            
+            # get a numpy array of which indices are repeat colors (so we can skip fcode)
+            color_strip = self.pixels[i*2:i*2+2, start:end+1]
+            colors_diffs = np.any(color_strip[:, 1:] != color_strip[:, :-1], axis=(0, 2))
+            
+            distances_to_next_diff = distances_to_false(colors_diffs)
+            
+            # add the first pixel
+            string += fco(self.pixels[i*2,start], self.pixels[i*2+1,start]) + '▀'
+
+            num_diffs_passed = 0
+            
+            for j in range(start+1, end+1):
+                # if colors_diffs is True for the current pixel, that means the colors are different from the previous pixel
+                # in that case we have to re-fcode
+                if colors_diffs[j-start-1]:
+                    string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀'
+                    num_diffs_passed += 1
+                else: # add a ton of pixels at once, then increment j
+                    string += '▀' * distances_to_next_diff[num_diffs_passed]
+                    j += distances_to_next_diff[num_diffs_passed] + 1
+            
+            #j = start + 1
+            #while j < end+1:
+            #    # if colors_diffs is True for the current pixel, that means the colors are different from the previous pixel
+            #    # in that case we have to re-fcode
+            #    if colors_diffs[j-start-1]:
+            #        string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀'
+            #        num_diffs_passed += 1
+            #        j += 1
+            #    else: # add a ton of pixels at once, then increment j
+            #        string += '▀' * distances_to_next_diff[num_diffs_passed]
+            #        j += distances_to_next_diff[num_diffs_passed] + 1
+
+
+            print_buffer.append(((int(start)+self.pos[0], i+self.pos[1]//2), string))
+
+        # combine all the print calls into a single call
+        final_string = ""
+        for coords, string in print_buffer:
+            final_string += stuff.term.move_xy(*coords) + string
+            
+        print3(final_string)
+        
+        #Logger.log(f"[CameraFrame/render]: print to terminal: {perf_counter()-start_time:4f}")
+           
+    # experimental, isnt working yet
+    def render3_iterpixelidxs(self, prev_frame: "CameraFrame") -> None:
+        """ Prints the frame to the screen.
+        Optimized by only printing the changes from the previous frame. """
+        
+        indices_to_print = []
+        """ Should end up being a list of tuples (start, end) 
+        where start and end are the first and last changed "pixels columns" (characters) in a row. """
+        
+        # compare the curr frame with the previous frame
+        # for each pair of rows, find the first and last changed column
+        # multiply term height by 2 since chars are 2 pixels tall
+        start_time = perf_counter()
+        times = {}
+        
+        #Logger.log(f"CF render begin -------------------------------")
+        
+        for top_row_index in range(0, self.height, 2):       
+            first_diff_row1 = first_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            first_diff_row2 = first_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            last_diff_row1 = last_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
+            last_diff_row2 = last_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
+            
+            print_start = lesser(first_diff_row1, first_diff_row2)
+            print_end = greater(last_diff_row1, last_diff_row2)
+            
+            #Logger.log(f"[CameraFrame/render]: Appending ({print_start}, {print_end}) to indices_to_print, which currently has {len(indices_to_print)} elements (b4 adding)")
+            indices_to_print.append((print_start, print_end))
+        
+        #Logger.log(f"[CameraFrame/render]: get indices to print: {1000*(perf_counter()-start_time):4f}ms")
+        # printing the frame
+        # for each pair of rows, convert the pixels from start to end into colored characters, then print.
+        
+        print_buffer: List[Tuple[Tuple[int, int], str]] = []
+        """
+        Buffer that stores locations as 2-tuples (representing where to term.goto) and the string to print there.
+        
+        This allows us to only use the print function a single time, which is much faster than calling it for each pixel.
+        """
+        
+        for i in range(len(indices_to_print)):
+            #Logger.log(f"[CameraFrame/render]: row {i} indices to print: {indices_to_print[i]}")
+            start, end = indices_to_print[i]
+            
+            # if both are None, that means the rows were the exact same, so we don't need to print anything
+            if start is None and end is None:
+                #Logger.log(f"Skipping row {i} since it's the same as the previous row!")
+                continue
+            
+            # converting the two pixel rows into a string
+            string = ""
+            start_time_2 = perf_counter()
+            
+            # get a numpy array of which indices are repeat colors (so we can skip fcode)
+            color_strip = self.pixels[i*2:i*2+2, start:end+1]
+            colors_diffs = np.any(color_strip[:, 1:] != color_strip[:, :-1], axis=(0, 2))
+            # [diff(0, 1), diff(1, 2), ... diff(n-1, n)]
+            
+            dists_to_diffs = distances_to_false(colors_diffs)
+            
+            # add the first pixel
+            string += fco(self.pixels[i*2,start], self.pixels[i*2+1,start]) + '▀'
+            
+            pixel_idx = 1 # index of the pixel we are currently at
+            for dist in dists_to_diffs:
+                # add dist * pixels, since they are all the same (so we dont need to fcode again)
+                # after that, add the next pixel; it has a different color
+                string += '▀' * dist
+                string += fco(self.pixels[i*2,start+pixel_idx], self.pixels[i*2+1,start+pixel_idx]) + '▀'
+                pixel_idx += dist + 1
+                
+            # add the last few pixels if needed, but theyre all the same
+            #if pixel_idx < end-start+1:
+            #    string += '▀' * (end-start+1 - pixel_idx)
+            #for j in range(start+1, end+1):
+                # if colors are the same as previous pixel, only add the pixel
+                #if colors_diffs[j-start-1]:
+                #    string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀' # pixels1 is top, so it gets fg color. pixels2 is bottom, so it gets bg color.
+                #else:
+                #    string += '▀'
+                    
+            #Logger.log(f"[CameraFrame/render]: str construction: {perf_counter()-start_time_2:4f}")
+            # go to coordinates in terminal, and print the string
+            # terminal coordinates: start, i
+            
+            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]}, {i + self.pos[1]//2} for len {end-start+1}")
+            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]},{i + self.pos[1]//2}: \x1b[0m[{string}\x1b[0m]")
+            #start_time_2 = perf_counter()
+           # print3(stuff.term.move_xy(int(start)+self.pos[0], i+self.pos[1]//2) + string)
+            print_buffer.append(((int(start)+self.pos[0], i+self.pos[1]//2), string))
+            #Logger.log(f"[CameraFrame/render]: strlen={len(string)}: {perf_counter()-start_time_2:4f}")
+        
+        # combine all the print calls into a single call
+        final_string = ""
+        for coords, string in print_buffer:
+            final_string += stuff.term.move_xy(*coords) + string
+            
+        print3(final_string)
+        
+        #Logger.log(f"[CameraFrame/render]: print to terminal: {perf_counter()-start_time:4f}")
+    
+    # VERY SLOW AND BROKEN (sad)
+    def curses_render(self, prev_frame: "CameraFrame") -> None:
+        """ new curses-based renderer test """
         
         self.initialized_colors = set()
         
@@ -193,91 +692,17 @@ class CameraFrame:
         
         Logger.log(f"(render) refreshing curses screen")
         stuff.screen.refresh()
-        
-        # printing the frame
-        # for each pair of rows, convert the pixels from start to end into colored characters, then print.
-        """ OLD PRINT-BASED RENDERING
-        for i in range(len(indices_to_print)):
-            #Logger.log(f"[CameraFrame/render]: row {i} indices to print: {indices_to_print[i]}")
-            start, end = indices_to_print[i]
-            
-            # if both are None, that means the rows were the exact same, so we don't need to print anything
-            if start is None and end is None:
-                #Logger.log(f"Skipping row {i} since it's the same as the previous row!")
-                continue
-            
-            # converting the two pixel rows into a string
-            string = ""
-            for j in range(start, end+1):
-                string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀' # pixels1 is top, so it gets fg color. pixels2 is bottom, so it gets bg color.
-            
-            # go to coordinates in terminal, and print the string
-            # terminal coordinates: start, i
-            
-            #Logger.log_on_screen(self.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]}, {i + self.pos[1]//2} for len {end-start+1}")
-            #Logger.log_on_screen(self.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]},{i + self.pos[1]//2}: \x1b[0m[{string}\x1b[0m]")
-            print2(self.term.move_xy(int(start)+self.pos[0], i+self.pos[1]//2) + string)
-        """
-
-    def render_old(self, prev_frame: "CameraFrame") -> None:
-        """ Prints the frame to the screen.
-        Optimized by only printing the changes from the previous frame. """
-        
-        indices_to_print = []
-        """ Should end up being a list of tuples (start, end) 
-        where start and end are the first and last changed "pixels columns" (characters) in a row. """
-        
-        # compare the curr frame with the previous frame
-        # for each pair of rows, find the first and last changed column
-        # multiply term height by 2 since chars are 2 pixels tall
-        for top_row_index in range(0, self.height, 2):       
-            first_diff_row1 = first_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
-            first_diff_row2 = first_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
-            
-            last_diff_row1 = last_diff_color(self.pixels[top_row_index], prev_frame.pixels[top_row_index])
-            last_diff_row2 = last_diff_color(self.pixels[top_row_index+1], prev_frame.pixels[top_row_index+1])
-            
-            print_start = lesser(first_diff_row1, first_diff_row2)
-            print_end = greater(last_diff_row1, last_diff_row2)
-            
-            #Logger.log(f"[CameraFrame/render]: Appending ({print_start}, {print_end}) to indices_to_print, which currently has {len(indices_to_print)} elements (b4 adding)")
-            indices_to_print.append((print_start, print_end))
-            
-        # printing the frame
-        # for each pair of rows, convert the pixels from start to end into colored characters, then print.
-        for i in range(len(indices_to_print)):
-            #Logger.log(f"[CameraFrame/render]: row {i} indices to print: {indices_to_print[i]}")
-            start, end = indices_to_print[i]
-            
-            # if both are None, that means the rows were the exact same, so we don't need to print anything
-            if start is None and end is None:
-                #Logger.log(f"Skipping row {i} since it's the same as the previous row!")
-                continue
-            
-            # converting the two pixel rows into a string
-            string = ""
-            for j in range(start, end+1):
-                string += fco(self.pixels[i*2,j], self.pixels[i*2+1,j]) + '▀' # pixels1 is top, so it gets fg color. pixels2 is bottom, so it gets bg color.
-            
-            # go to coordinates in terminal, and print the string
-            # terminal coordinates: start, i
-            
-            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]}, {i + self.pos[1]//2} for len {end-start+1}")
-            #Logger.log_on_screen(stuff.term, f"[CameraFrame/render]: printing@{int(start) + self.pos[0]},{i + self.pos[1]//2}: \x1b[0m[{string}\x1b[0m]")
-            print2(stuff.term.move_xy(int(start)+self.pos[0], i+self.pos[1]//2) + string)
-            
-        #stuff.screen.refresh()
-
-    def fill(self, color: Tuple[int, int, int]) -> None:
+    
+    def fill(self, color: RGBTuple) -> None:
         """ Fills the entire canvas with the given color. RGB (3-tuple) required. Should be pretty efficient because of numpy. """
         assert len(color) == 3, f"[FrameLayer/fill]: color must be an rgb (3 ints) tuple, instead got {color}"
         self.pixels[:,:] = color
         
     def fill_with_gradient(
         self, 
-        color1: Tuple[int, int, int], 
-        color2: Tuple[int, int, int], 
-        direction = "horizontal"
+        color1: RGBTuple, 
+        color2: RGBTuple, 
+        direction: Literal["horizontal", "vertical"] = "horizontal"
         ) -> None:
         """ Fills the entire canvas with a gradient from color1 to color2.
         The gradient can be either horizontal or vertical. """
@@ -296,14 +721,25 @@ class CameraFrame:
             for i in range(self.width):
                 self.pixels[:,i] = gradient
 
+    Anchor = Literal[
+        "top-left", 
+        "top-right", 
+        "bottom-left", 
+        "bottom-right", 
+        "center",
+        "top",
+        "bottom",
+        "left",
+        "right"
+    ]
     def add_rect(
         self, 
-        color, 
+        color: RGBTuple | RGBATuple, 
         x: int, y: int, 
         width: int, height: int,
         outline_width: int = 0,
-        outline_color = (0,0,0,0),
-        anchor = "top-left",
+        outline_color: RGBTuple | RGBATuple = (0,0,0,0),
+        anchor: Anchor = "top-left",
         ) -> None:
         """ Places a rectangle on the frame with the given RGBA color and position.
         Optionally, can add an outline to the rectangle with the given width and color. 
@@ -334,38 +770,39 @@ class CameraFrame:
         x1 = x - outline_width
         x2 = x + width + outline_width
         
-        if anchor == "top-right":
-            x1 -= width
-            x2 -= width
-        elif anchor == "bottom-left":
-            y1 -= height
-            y2 -= height
-        elif anchor == "bottom-right":
-            x1 -= width
-            x2 -= width
-            y1 -= height
-            y2 -= height
-        elif anchor == "center":
-            x1 -= width // 2
-            x2 -= width // 2
-            y1 -= height // 2
-            y2 -= height // 2
-        elif anchor == "top":
-            x1 -= width // 2
-            x2 -= width // 2
-        elif anchor == "bottom":
-            x1 -= width // 2
-            x2 -= width // 2
-            y1 -= height
-            y2 -= height
-        elif anchor == "left":
-            y1 -= height // 2
-            y2 -= height // 2
-        elif anchor == "right":
-            y1 -= height // 2
-            y2 -= height // 2
-            x1 -= width
-            x2 -= width
+        match(anchor):
+            case "top-right":
+                x1 -= width
+                x2 -= width
+            case "bottom-left":
+                y1 -= height
+                y2 -= height
+            case "bottom-right":
+                x1 -= width
+                x2 -= width
+                y1 -= height
+                y2 -= height
+            case "center":
+                x1 -= width // 2
+                x2 -= width // 2
+                y1 -= height // 2
+                y2 -= height // 2
+            case "top":
+                x1 -= width // 2
+                x2 -= width // 2
+            case "bottom":
+                x1 -= width // 2
+                x2 -= width // 2
+                y1 -= height
+                y2 -= height
+            case "left":
+                y1 -= height // 2
+                y2 -= height // 2
+            case "right":
+                y1 -= height // 2
+                y2 -= height // 2
+                x1 -= width
+                x2 -= width
         
         # if any coords go out of bounds, set it to the edge of the frame and clip the rect_as_pixels
         clipped_y1 = max(0, y1)
@@ -457,7 +894,7 @@ class CameraFrame:
             pixels[offset_top:, offset_left:]
         )
     
-    def add_line(self, pos1: Tuple[int, int], pos2: Tuple[int, int], color: Tuple[int, int, int]) -> None:
+    def add_line(self, pos1: Tuple[int, int], pos2: Tuple[int, int], color: RGBTuple) -> None:
         """ Draws a non-antialiased, 1-wide line between two points on the frame. """
         draw_line(self.pixels, pos1, pos2, color)
     
